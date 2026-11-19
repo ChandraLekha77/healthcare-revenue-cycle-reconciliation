@@ -1,0 +1,14 @@
+# Environment variable names used by the application database layer.
+# This file contains no credentials or environment-specific values.
+database:
+  driver: postgresql+psycopg
+  environment:
+    host: POSTGRES_HOST
+    port: POSTGRES_PORT
+    database: POSTGRES_DB
+    username: POSTGRES_USER
+    password: POSTGRES_PASSWORD
+    echo: DB_ECHO
+    pool_size: DB_POOL_SIZE
+    max_overflow: DB_MAX_OVERFLOW
+    pool_timeout: DB_POOL_TIMEOUT
