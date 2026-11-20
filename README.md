@@ -74,3 +74,21 @@ local reset is intentional:
 ```powershell
 docker compose down --volumes
 ```
+
+## Day 3: acquire official Synthea CSV data
+
+Download the pinned official November 2021 Synthea CSV sample, extract only the
+eight project source tables, validate them, and create a data inventory:
+
+```powershell
+python scripts/download_synthea_data.py
+```
+
+Revalidate the local raw files without downloading them again:
+
+```powershell
+python scripts/validate_source_files.py
+```
+
+The raw CSVs remain byte-for-byte copies of the official archive and are ignored
+by Git. See `data/README.md` for source provenance and validation details.

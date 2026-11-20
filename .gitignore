@@ -8,3 +8,5 @@ __pycache__/
 htmlcov/
 .venv/
 venv/
+data/raw/synthea/*.csv
+data/raw/synthea/*.tmp
