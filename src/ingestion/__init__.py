@@ -1,5 +1,14 @@
 """Source-data acquisition and ingestion utilities."""
 
+from src.ingestion.cms_loader import (
+    CMS_SOURCES,
+    CMSAcquisitionError,
+    CMSArchiveMetadata,
+    CMSSource,
+    CMSValidationError,
+    acquire_cms_data,
+    validate_cms_directory,
+)
 from src.ingestion.synthea_loader import (
     EXPECTED_HEADERS,
     FileMetadata,
@@ -11,11 +20,18 @@ from src.ingestion.synthea_loader import (
 )
 
 __all__ = [
+    "CMS_SOURCES",
+    "CMSAcquisitionError",
+    "CMSArchiveMetadata",
+    "CMSSource",
+    "CMSValidationError",
     "EXPECTED_HEADERS",
     "FileMetadata",
     "SyntheaAcquisitionError",
     "SyntheaValidationError",
     "acquire_synthea_data",
+    "acquire_cms_data",
+    "validate_cms_directory",
     "validate_synthea_directory",
     "write_inventory",
 ]

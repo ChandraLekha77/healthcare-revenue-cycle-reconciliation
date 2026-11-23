@@ -10,3 +10,5 @@ htmlcov/
 venv/
 data/raw/synthea/*.csv
 data/raw/synthea/*.tmp
+data/raw/cms/*.zip
+data/raw/cms/*.tmp

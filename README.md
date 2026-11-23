@@ -92,3 +92,31 @@ python scripts/validate_source_files.py
 
 The raw CSVs remain byte-for-byte copies of the official archive and are ignored
 by Git. See `data/README.md` for source provenance and validation details.
+
+## Day 4: acquire and explore CMS reference data
+
+Download the version-pinned CMS ICD-10-CM, HCPCS Level II, and Medicare
+Physician Fee Schedule archives that were effective on November 23, 2026:
+
+```powershell
+python scripts/download_cms_data.py
+```
+
+Validate the local archives without downloading them again:
+
+```powershell
+python scripts/download_cms_data.py --validate-only
+```
+
+Install the notebook dependencies and execute the source exploration:
+
+```powershell
+python -m pip install -r requirements.txt
+python -m nbconvert --to notebook --execute --inplace `
+    notebooks/01_data_exploration.ipynb
+```
+
+The executed notebook documents each source's columns, code fields, formats,
+effective-date fields, schema differences, CPT licensing limitation, and MPFS
+interpretation limitation. The original CMS ZIP files remain unchanged and are
+ignored by Git.
