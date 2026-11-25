@@ -11,11 +11,16 @@ import shutil
 import tempfile
 import urllib.error
 import urllib.request
+import uuid
 import zipfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Final, Iterable, Sequence
+from typing import Final, Iterable, Iterator, Sequence
+
+import pandas as pd
+from sqlalchemy import BigInteger, DateTime, Engine, Text, text
+from sqlalchemy.exc import SQLAlchemyError
 
 LOGGER = logging.getLogger(__name__)
 
@@ -29,7 +34,8 @@ SYNTHEA_ARCHIVE_SHA256: Final = (
 DEFAULT_OUTPUT_DIRECTORY: Final = Path("data/raw/synthea")
 DEFAULT_INVENTORY_FILENAME: Final = "_inventory.json"
 DOWNLOAD_CHUNK_SIZE: Final = 1024 * 1024
-
+DEFAULT_DATABASE_SCHEMA: Final = "raw"
+DEFAULT_INGESTION_CHUNK_SIZE: Final = 25_000
 EXPECTED_HEADERS: Final[dict[str, tuple[str, ...]]] = {
     "patients.csv": (
         "Id", "BIRTHDATE", "DEATHDATE", "SSN", "DRIVERS", "PASSPORT",
@@ -92,6 +98,10 @@ class SyntheaValidationError(ValueError):
     """Raised when a Synthea source file fails structural validation."""
 
 
+class SyntheaIngestionError(RuntimeError):
+    """Raised when a validated Synthea file cannot be loaded and reconciled."""
+
+
 @dataclass(frozen=True, slots=True)
 class FileMetadata:
     """Validated metadata for one unmodified Synthea CSV file."""
@@ -102,6 +112,19 @@ class FileMetadata:
     row_count: int
     sha256: str
     headers: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class IngestionResult:
+    """Reconciliation result for one source file and raw database table."""
+
+    filename: str
+    table_name: str
+    source_row_count: int
+    loaded_row_count: int
+    difference: int
+    load_id: str
+    status: str
 
 
 def _sha256(path: Path) -> str:
@@ -314,3 +337,226 @@ def acquire_synthea_data(
     )
     LOGGER.info("Validated %d required Synthea source files.", len(final_metadata))
     return final_metadata
+
+
+def _quote_identifier(identifier: str) -> str:
+    """Quote a trusted SQL identifier and reject embedded null characters."""
+    if "\x00" in identifier:
+        raise SyntheaIngestionError("SQL identifiers cannot contain null characters.")
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _table_name(filename: str) -> str:
+    """Return the raw table name for a selected CSV filename."""
+    if filename not in EXPECTED_HEADERS:
+        raise SyntheaIngestionError(f"Unsupported Synthea source file: {filename}")
+    return Path(filename).stem
+
+
+def _read_csv_chunks(path: Path, chunk_size: int) -> Iterator[pd.DataFrame]:
+    """Stream source values as text while retaining literals such as 'NA'."""
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be at least 1.")
+    try:
+        yield from pd.read_csv(
+            path,
+            dtype=str,
+            keep_default_na=False,
+            na_filter=False,
+            encoding="utf-8-sig",
+            chunksize=chunk_size,
+        )
+    except (OSError, UnicodeError, pd.errors.ParserError) as exc:
+        raise SyntheaIngestionError(f"Unable to parse {path}: {exc}") from exc
+
+
+def _prepare_chunk(
+    chunk: pd.DataFrame,
+    filename: str,
+    load_id: str,
+    loaded_at_utc: datetime,
+    first_source_row: int,
+) -> pd.DataFrame:
+    """Convert blank source fields to null and append deterministic lineage."""
+    prepared = chunk.mask(chunk.eq(""), None)
+    prepared["_source_filename"] = filename
+    prepared["_source_row_number"] = range(
+        first_source_row, first_source_row + len(prepared)
+    )
+    prepared["_load_id"] = load_id
+    prepared["_loaded_at_utc"] = loaded_at_utc
+    return prepared
+
+
+def _database_types(source_headers: Sequence[str]) -> dict[str, object]:
+    """Return explicit SQL types for source and lineage columns."""
+    return {
+        **{column: Text() for column in source_headers},
+        "_source_filename": Text(),
+        "_source_row_number": BigInteger(),
+        "_load_id": Text(),
+        "_loaded_at_utc": DateTime(timezone=True),
+    }
+
+
+def load_synthea_csv(
+    engine: Engine,
+    path: Path,
+    *,
+    schema: str = DEFAULT_DATABASE_SCHEMA,
+    chunk_size: int = DEFAULT_INGESTION_CHUNK_SIZE,
+) -> IngestionResult:
+    """Atomically load one validated Synthea CSV and reconcile its row count.
+
+    Source fields are stored as database text so ingestion cannot silently alter
+    identifiers, dates, codes, or synthetic monetary values. Type conversion is
+    deliberately deferred to the staging layer.
+    """
+    filename = path.name
+    expected_headers = EXPECTED_HEADERS.get(filename)
+    if expected_headers is None:
+        raise SyntheaIngestionError(f"Unsupported Synthea source file: {filename}")
+
+    try:
+        source_row_count, _ = validate_csv(path, expected_headers)
+        source_sha256 = _sha256(path)
+    except SyntheaValidationError as exc:
+        raise SyntheaIngestionError(str(exc)) from exc
+    table_name = _table_name(filename)
+    load_id = str(uuid.uuid4())
+    loaded_at_utc = datetime.now(timezone.utc)
+    temporary_table = f"_{table_name}_{load_id.replace('-', '')[:12]}"
+    qualified_temporary = (
+        f"{_quote_identifier(schema)}.{_quote_identifier(temporary_table)}"
+    )
+    qualified_target = f"{_quote_identifier(schema)}.{_quote_identifier(table_name)}"
+    rows_written = 0
+    created = False
+
+    LOGGER.info(
+        "synthea_load_started file=%s table=%s source_rows=%d load_id=%s",
+        filename,
+        f"{schema}.{table_name}",
+        source_row_count,
+        load_id,
+    )
+    try:
+        with engine.begin() as connection:
+            for chunk in _read_csv_chunks(path, chunk_size):
+                if list(chunk.columns) != list(expected_headers):
+                    raise SyntheaIngestionError(
+                        f"Unexpected header while loading {filename}."
+                    )
+                prepared = _prepare_chunk(
+                    chunk,
+                    filename,
+                    load_id,
+                    loaded_at_utc,
+                    rows_written + 1,
+                )
+                prepared.to_sql(
+                    temporary_table,
+                    connection,
+                    schema=schema,
+                    if_exists="append" if created else "fail",
+                    index=False,
+                    dtype=_database_types(expected_headers),
+                )
+                created = True
+                rows_written += len(prepared)
+
+            if not created:
+                empty = pd.DataFrame(columns=[
+                    *expected_headers,
+                    "_source_filename",
+                    "_source_row_number",
+                    "_load_id",
+                    "_loaded_at_utc",
+                ])
+                empty.to_sql(
+                    temporary_table,
+                    connection,
+                    schema=schema,
+                    if_exists="fail",
+                    index=False,
+                    dtype=_database_types(expected_headers),
+                )
+
+            loaded_row_count = int(
+                connection.execute(
+                    text(f"SELECT COUNT(*) FROM {qualified_temporary}")
+                ).scalar_one()
+            )
+            if source_row_count != rows_written or source_row_count != loaded_row_count:
+                raise SyntheaIngestionError(
+                    f"Row-count reconciliation failed for {filename}: "
+                    f"source={source_row_count}, written={rows_written}, "
+                    f"database={loaded_row_count}."
+                )
+            if _sha256(path) != source_sha256:
+                raise SyntheaIngestionError(
+                    f"Source file changed during ingestion: {path}"
+                )
+
+            connection.execute(text(f"DROP TABLE IF EXISTS {qualified_target}"))
+            connection.execute(
+                text(
+                    f"ALTER TABLE {qualified_temporary} "
+                    f"RENAME TO {_quote_identifier(table_name)}"
+                )
+            )
+    except (SQLAlchemyError, SyntheaIngestionError) as exc:
+        LOGGER.exception(
+            "synthea_load_failed file=%s table=%s load_id=%s",
+            filename,
+            f"{schema}.{table_name}",
+            load_id,
+        )
+        if isinstance(exc, SyntheaIngestionError):
+            raise
+        raise SyntheaIngestionError(
+            f"Database load failed for {filename}: {exc}"
+        ) from exc
+
+    result = IngestionResult(
+        filename=filename,
+        table_name=f"{schema}.{table_name}",
+        source_row_count=source_row_count,
+        loaded_row_count=loaded_row_count,
+        difference=loaded_row_count - source_row_count,
+        load_id=load_id,
+        status="reconciled",
+    )
+    LOGGER.info(
+        "synthea_load_completed file=%s table=%s source_rows=%d "
+        "loaded_rows=%d difference=%d status=%s load_id=%s",
+        result.filename,
+        result.table_name,
+        result.source_row_count,
+        result.loaded_row_count,
+        result.difference,
+        result.status,
+        result.load_id,
+    )
+    return result
+
+
+def load_synthea_directory(
+    engine: Engine,
+    directory: Path = DEFAULT_OUTPUT_DIRECTORY,
+    *,
+    schema: str = DEFAULT_DATABASE_SCHEMA,
+    chunk_size: int = DEFAULT_INGESTION_CHUNK_SIZE,
+) -> list[IngestionResult]:
+    """Load and reconcile every selected Synthea CSV in deterministic order."""
+    results = []
+    for filename in EXPECTED_HEADERS:
+        results.append(
+            load_synthea_csv(
+                engine,
+                directory / filename,
+                schema=schema,
+                chunk_size=chunk_size,
+            )
+        )
+    return results

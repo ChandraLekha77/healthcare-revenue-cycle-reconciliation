@@ -6,14 +6,18 @@ import csv
 import hashlib
 import json
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+import pandas as pd
 
 from src.ingestion.synthea_loader import (
     EXPECTED_HEADERS,
     SyntheaAcquisitionError,
     SyntheaValidationError,
+    _prepare_chunk,
+    _read_csv_chunks,
     acquire_synthea_data,
     validate_csv,
 )
@@ -96,3 +100,27 @@ def test_acquisition_rejects_archive_checksum_mismatch(tmp_path: Path) -> None:
             source_url=archive_path.as_uri(),
             expected_archive_sha256="0" * 64,
         )
+
+
+def test_read_chunks_preserves_text_literals_and_prepare_adds_lineage(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "sample.csv"
+    csv_path.write_text("CODE,VALUE\n001,NA\n002,\n", encoding="utf-8")
+
+    chunks = list(_read_csv_chunks(csv_path, chunk_size=1))
+
+    assert len(chunks) == 2
+    assert chunks[0].iloc[0].to_dict() == {"CODE": "001", "VALUE": "NA"}
+    prepared = _prepare_chunk(
+        pd.concat(chunks, ignore_index=True),
+        "sample.csv",
+        "load-id",
+        datetime(2026, 1, 1, tzinfo=timezone.utc),
+        1,
+    )
+    assert prepared["CODE"].tolist() == ["001", "002"]
+    assert prepared["VALUE"].tolist()[0] == "NA"
+    assert pd.isna(prepared["VALUE"].tolist()[1])
+    assert prepared["_source_row_number"].tolist() == [1, 2]
+    assert prepared["_source_filename"].tolist() == ["sample.csv", "sample.csv"]

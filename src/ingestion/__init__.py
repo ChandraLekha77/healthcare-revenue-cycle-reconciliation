@@ -35,3 +35,18 @@ __all__ = [
     "validate_synthea_directory",
     "write_inventory",
 ]
+"""Source acquisition and raw ingestion interfaces."""
+
+from src.ingestion.synthea_loader import (
+    IngestionResult,
+    SyntheaIngestionError,
+    load_synthea_csv,
+    load_synthea_directory,
+)
+
+__all__ = [
+    "IngestionResult",
+    "SyntheaIngestionError",
+    "load_synthea_csv",
+    "load_synthea_directory",
+]

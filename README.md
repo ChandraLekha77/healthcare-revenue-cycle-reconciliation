@@ -120,3 +120,24 @@ The executed notebook documents each source's columns, code fields, formats,
 effective-date fields, schema differences, CPT licensing limitation, and MPFS
 interpretation limitation. The original CMS ZIP files remain unchanged and are
 ignored by Git.
+
+## Day 6: ingest raw Synthea data
+
+Start PostgreSQL and load the environment variables as described in Day 2, then
+run the streaming raw ingestion from the repository root:
+
+```powershell
+python scripts/load_raw_data.py
+```
+
+The command validates each CSV, loads it into the corresponding table in the
+`raw` schema, and prints source and database row counts. A table is replaced
+only after its new load reconciles successfully. Any mismatch or load failure
+returns a nonzero exit code. Source values are ingested as text, blank fields
+become SQL `NULL`, and data typing is deferred to staging so raw ingestion does
+not silently change identifiers, codes, dates, or synthetic amounts.
+
+The raw tables are `patients`, `encounters`, `procedures`, `medications`,
+`conditions`, `claims`, `claims_transactions`, and `payers`. Each includes the
+lineage columns `_source_filename`, `_source_row_number`, `_load_id`, and
+`_loaded_at_utc`. The source CSV files are read only and remain unchanged.
