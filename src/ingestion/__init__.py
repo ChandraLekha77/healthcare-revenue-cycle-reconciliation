@@ -18,6 +18,11 @@ from src.ingestion.synthea_loader import (
     validate_synthea_directory,
     write_inventory,
 )
+from src.ingestion.cms_loader import (
+    CMSIngestionError,
+    CMSIngestionResult,
+    load_cms_references,
+)
 
 __all__ = [
     "CMS_SOURCES",
@@ -49,4 +54,7 @@ __all__ = [
     "SyntheaIngestionError",
     "load_synthea_csv",
     "load_synthea_directory",
+    "CMSIngestionError",
+    "CMSIngestionResult",
+    "load_cms_references",
 ]

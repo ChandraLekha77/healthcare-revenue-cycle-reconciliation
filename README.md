@@ -141,3 +141,32 @@ The raw tables are `patients`, `encounters`, `procedures`, `medications`,
 `conditions`, `claims`, `claims_transactions`, and `payers`. Each includes the
 lineage columns `_source_filename`, `_source_row_number`, `_load_id`, and
 `_loaded_at_utc`. The source CSV files are read only and remain unchanged.
+
+## Day 7: ingest CMS reference data
+
+With PostgreSQL running and the Day 2 environment variables loaded, ingest the
+three pinned CMS archives:
+
+```powershell
+python scripts/load_cms_data.py
+```
+
+The command creates and reconciles `raw.cms_icd10cm_fy2027`,
+`raw.cms_hcpcs_2026_q4`, and `raw.cms_mpfs_rvu26d`. Each table is replaced only
+after its new load succeeds and its parsed row count matches PostgreSQL.
+
+Source-specific transformations are intentionally limited:
+
+- ICD-10-CM code and description are split from the headerless fixed-width code
+  file; `raw_record` retains the complete original record.
+- All 48 HCPCS workbook fields are retained with normalized column names. Field
+  values, including source code padding and source-level date strings, are not
+  semantically converted in the raw layer.
+- The MPFS non-QPP CSV's ten published header rows are skipped and its 32 data
+  fields receive stable names from the CMS record layout. Values remain text.
+
+All tables include source archive, member, row number, dataset version,
+archive-level effective dates, load ID, and UTC load timestamp. The CMS MPFS
+RVUs, indicators, and conversion factor are Medicare reference inputs only;
+they are not payer-specific contractual allowed amounts and must not be used as
+underpayment evidence without an applicable contract and approved methodology.
